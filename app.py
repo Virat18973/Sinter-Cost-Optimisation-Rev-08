@@ -54,19 +54,75 @@ MASTER=["Material","Group","Fe","SiO2","Al2O3","CaO","MgO","LOI","Tech_Min","Tec
 def clean_cols(df):
     df=df.copy(); df.columns=df.columns.astype(str).str.strip().str.replace(r"\s+","_",regex=True); return df
 
-def load_primary(f):
-    df=clean_cols(pd.read_excel(f)); miss=[c for c in MASTER if c not in df.columns]
-    if miss: raise ValueError("Primary Excel missing: "+", ".join(miss))
-    df=df[MASTER].copy(); df["Material"]=df["Material"].astype(str).str.strip(); df["Group"]=df["Group"].astype(str).str.strip()
-    if df["Material"].duplicated().any(): raise ValueError("Duplicate material names in primary Excel.")
-    if not set(df["Group"]).issubset(GROUPS): raise ValueError("Invalid Group. Use Iron_ore, Flux, Recycle or Fuel.")
+def _prepare_master_dataframe(df):
+    df=clean_cols(df)
+    miss=[c for c in MASTER if c not in df.columns]
+    if miss: raise ValueError("Master Excel missing: "+", ".join(miss))
+    df=df[MASTER].copy()
+    df["Material"]=df["Material"].astype(str).str.strip()
+    df["Group"]=df["Group"].astype(str).str.strip()
+    df=df[df["Material"].notna() & (df["Material"].astype(str).str.strip()!="")].copy()
+    if df["Material"].duplicated().any():
+        raise ValueError("Duplicate material names in master Excel.")
+    if not set(df["Group"]).issubset(GROUPS):
+        raise ValueError("Invalid Group. Use Iron_ore, Flux, Recycle or Fuel.")
     df=df.set_index("Material")
-    for c in MASTER[2:]: df[c]=pd.to_numeric(df[c],errors="raise")
-    df["Price_Rs_t"]=0.0; df["Available_Tonnes"]=0.0
+    for c in MASTER[2:]:
+        df[c]=pd.to_numeric(df[c],errors="raise")
+    df["Price_Rs_t"]=0.0
+    df["Available_Tonnes"]=0.0
     return df
 
+def load_master_excel(f):
+    """Load ONE master workbook and split primary/alternative rows.
+
+    The supplied master workbook uses pale-yellow formatting for the
+    alternative-ore rows (Haema, Bauxaa). That formatting is used as the
+    explicit marker, while rows named ALT_* are also treated as alternatives.
+    """
+    from openpyxl import load_workbook
+    raw=pd.read_excel(f, sheet_name="Master_Chemistry")
+    df=_prepare_master_dataframe(raw)
+
+    wb=load_workbook(f, data_only=True)
+    ws=wb["Master_Chemistry"]
+    alt_names=set()
+    for row in range(2, ws.max_row+1):
+        name=ws.cell(row,1).value
+        if name is None or str(name).strip()=="":
+            continue
+        name=str(name).strip()
+        fill=ws.cell(row,1).fill
+        rgb=fill.fgColor.rgb if fill and fill.fill_type=="solid" else None
+        # Pale-yellow alternative rows in the provided master workbook.
+        is_yellow = bool(rgb and str(rgb).upper().endswith(("FFF9E6","F9E6","FFF2CC","F2CC")))
+        is_alt_name = name.upper().startswith("ALT_")
+        if is_yellow or is_alt_name:
+            alt_names.add(name)
+
+    # Fallback for the documented bottom alternative slots: if explicit
+    # yellow/ALT markers exist, use them. Otherwise the workbook is treated
+    # as an all-primary master.
+    alt_names={m for m in alt_names if m in df.index}
+    alt_df=df.loc[list(alt_names)].copy() if alt_names else df.iloc[0:0].copy()
+    primary_df=df.drop(index=list(alt_names)).copy() if alt_names else df.copy()
+
+    # Alternatives are always iron ore candidates and start disabled.
+    if len(alt_df):
+        alt_df["Group"]="Iron_ore"
+    return primary_df, alt_df
+
+def load_primary(f):
+    # Backward-compatible loader for settings/legacy calls.
+    primary,_=load_master_excel(f)
+    return primary
+
 def load_alt(f):
-    df=load_primary(f); df["Group"]="Iron_ore"; return df
+    # Kept only for backward compatibility; normal workflow uses one master Excel.
+    _,alt=load_master_excel(f)
+    if len(alt)==0:
+        raise ValueError("No alternative-ore rows were detected in the master Excel.")
+    return alt
 
 # ---------- STATE ----------
 if "df" not in st.session_state:
@@ -81,11 +137,25 @@ if "df" not in st.session_state:
 if "nav" not in st.session_state: st.session_state.nav="Dashboard"
 
 def reset_primary(df,source):
-    st.session_state.df=df.copy(); st.session_state.source=source
-    st.session_state.primary=list(df.index); st.session_state.alts=[]; st.session_state.alt_on={}
-    st.session_state.avail={m:True for m in df.index}; st.session_state.result=None
-    st.session_state.manual_base=None; st.session_state.manual=None; st.session_state.changed=False
-    st.session_state.whatif=None; st.session_state.runs=0
+    reset_master(df, df.iloc[0:0].copy(), source)
+
+def reset_master(primary_df, alt_df, source):
+    combined=primary_df.copy()
+    if len(alt_df):
+        combined=pd.concat([combined,alt_df],axis=0)
+    st.session_state.df=combined.copy()
+    st.session_state.source=source
+    st.session_state.primary=list(primary_df.index)
+    st.session_state.alts=list(alt_df.index)
+    st.session_state.alt_on={m:False for m in st.session_state.alts}
+    st.session_state.avail={m:True for m in st.session_state.primary}
+    st.session_state.avail.update({m:False for m in st.session_state.alts})
+    st.session_state.result=None
+    st.session_state.manual_base=None
+    st.session_state.manual=None
+    st.session_state.changed=False
+    st.session_state.whatif=None
+    st.session_state.runs=0
 
 def add_alt(df):
     dup=set(df.index)&set(st.session_state.df.index)
@@ -214,25 +284,25 @@ st.markdown(f'<div style="display:flex;justify-content:space-between;align-items
 
 # ---------- PAGES ----------
 def dashboard():
-    # ---------- MASTER / ALTERNATIVE EXCEL CONTROL ----------
+    # ---------- ONE MASTER EXCEL / DATA SOURCE ----------
     st.markdown(
         '<div class="panel" style="margin-bottom:.8rem">'
         '<div class="panel-title">DATA CONTROL CENTER</div>'
-        '<div class="small">Master chemistry drives the primary raw-material model. '
-        'Alternative ores are loaded separately and remain excluded until the user explicitly enables them.</div>'
+        '<div class="small">Upload one Master Chemistry Excel. Primary materials and optional alternative ores are read from the same workbook. '
+        'Alternative ores remain excluded until the user explicitly switches them ON.</div>'
         '</div>',
         unsafe_allow_html=True
     )
 
-    up1, source_box, up2 = st.columns([1.65, 1.35, 1.65], gap="medium")
+    upload_col, source_col, info_col = st.columns([2.0,1.45,1.15], gap="medium")
 
-    with up1:
+    with upload_col:
         st.markdown(
-            '<div class="notice"><b>① MASTER CHEMISTRY EXCEL</b><br>'
-            '<span class="small">Primary chemistry • read-only after activation</span></div>',
+            '<div class="notice"><b>MASTER CHEMISTRY EXCEL</b><br>'
+            '<span class="small">Primary + Alternative Ore rows in the same workbook</span></div>',
             unsafe_allow_html=True
         )
-        master_file = st.file_uploader(
+        master_file=st.file_uploader(
             "Upload Master Chemistry Excel",
             type=["xlsx"],
             key="dashboard_master_upload",
@@ -240,73 +310,63 @@ def dashboard():
         )
         if master_file:
             try:
-                master_df = load_primary(master_file)
-                st.success(f"{len(master_df)} primary materials validated.")
+                primary_df,alt_df=load_master_excel(master_file)
+                st.success(
+                    f"{len(primary_df)} primary + {len(alt_df)} alternative material(s) detected."
+                )
                 if st.button(
                     "ACTIVATE MASTER EXCEL",
                     type="primary",
                     use_container_width=True,
                     key="dashboard_activate_master"
                 ):
-                    reset_primary(master_df, "Master Excel • " + master_file.name)
+                    reset_master(
+                        primary_df,
+                        alt_df,
+                        "Master Excel • " + master_file.name
+                    )
                     st.rerun()
             except Exception as e:
                 st.error(str(e))
 
-    with source_box:
-        source_is_excel = str(st.session_state.source).startswith("Master Excel")
-        source_label = "MASTER EXCEL IN USE" if source_is_excel else "BUILT-IN MASTER IN USE"
-        source_cls = "ok" if source_is_excel else "info"
+    with source_col:
+        source_is_excel=str(st.session_state.source).startswith("Master Excel")
+        source_label="MASTER EXCEL IN USE" if source_is_excel else "BUILT-IN MASTER IN USE"
+        source_cls="ok" if source_is_excel else "info"
         st.markdown(
             f'<div class="source-card">'
             f'<div class="source-status {source_cls}">● {source_label}</div>'
             f'<div class="source-name">{st.session_state.source}</div>'
-            f'<div class="small">{len(st.session_state.primary)} primary materials loaded</div>'
+            f'<div class="small">{len(st.session_state.primary)} primary • {len(st.session_state.alts)} alternative</div>'
             f'</div>',
             unsafe_allow_html=True
         )
 
-    with up2:
+    with info_col:
         st.markdown(
-            '<div class="notice"><b>② ALTERNATIVE ORE EXCEL</b><br>'
-            '<span class="small">Optional contingency chemistry</span></div>',
+            f'<div class="source-card">'
+            f'<div class="source-status {"ok" if st.session_state.alts else "info"}">'
+            f'● ALTERNATIVE ORE</div>'
+            f'<div class="source-name">'
+            f'{sum(bool(st.session_state.alt_on.get(m,False)) for m in st.session_state.alts)} enabled'
+            f'</div>'
+            f'<div class="small">{len(st.session_state.alts)} loaded • OFF by default</div>'
+            f'</div>',
             unsafe_allow_html=True
         )
-        alt_file_top = st.file_uploader(
-            "Upload Alternative Ore Chemistry Excel",
-            type=["xlsx"],
-            key="dashboard_alt_top_upload",
-            label_visibility="collapsed"
-        )
-        if alt_file_top:
-            try:
-                alt_df_top = load_alt(alt_file_top)
-                st.success(f"{len(alt_df_top)} alternative material(s) validated.")
-                if st.button(
-                    "LOAD ALTERNATIVE ORE",
-                    type="secondary",
-                    use_container_width=True,
-                    key="dashboard_add_alt_top"
-                ):
-                    add_alt(alt_df_top)
-                    st.rerun()
-            except Exception as e:
-                st.error(str(e))
 
-    st.markdown(
-        '<div style="height:10px"></div>',
-        unsafe_allow_html=True
-    )
+    st.markdown('<div style="height:12px"></div>',unsafe_allow_html=True)
 
     # ---------- CONTROL ROOM ----------
     st.markdown(
         '<div class="hero"><b>CONTROL ROOM</b>'
-        '<div class="sub">Primary chemistry is read-only from master Excel. '
-        'Price, RM Stock, Tech Max and availability are daily dashboard inputs.</div></div>',
+        '<div class="sub">Primary chemistry is read-only from the active master Excel. '
+        'Price, RM Stock, Tech Max and availability are daily inputs. '
+        'Alternative chemistry is editable only in the Alternative Ore section below.</div></div>',
         unsafe_allow_html=True
     )
 
-    a,b,c=st.columns([4.2,1.7,1.25], gap="large")
+    a,b,c=st.columns([4.2,1.7,1.25],gap="large")
     with a:
         st.markdown(
             f'<div class="notice"><b>ACTIVE MASTER SOURCE:</b> {st.session_state.source}</div>',
@@ -331,7 +391,7 @@ def dashboard():
             unsafe_allow_html=True
         )
 
-    st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
+    st.markdown('<div style="height:12px"></div>',unsafe_allow_html=True)
 
     if result and result["blend"]:
         bd,cost,total=breakdown(result["blend"],result["df"])
@@ -344,7 +404,7 @@ def dashboard():
             ("QUALITY","PASS" if ok else "REVIEW","Mandatory constraints","kpi-g" if ok else "kpi-r"),
             ("ALT ORE","USED" if any(result["blend"].get(m,0)>0 for m in st.session_state.alts) else "NOT USED","Contingency","kpi-o")
         ]
-        cc=st.columns(5, gap="medium")
+        cc=st.columns(5,gap="medium")
         for col,(l,v,s,cl) in zip(cc,cards):
             col.markdown(
                 f'<div class="kpi {cl}"><div class="kpi-label">{l}</div>'
@@ -353,7 +413,7 @@ def dashboard():
             )
 
         st.write("")
-        a,b=st.columns([1,2], gap="medium")
+        a,b=st.columns([1,2],gap="medium")
         with a:
             st.markdown(
                 '<div class="panel"><div class="panel-title">ACHIEVED CHEMISTRY</div>'
@@ -368,33 +428,19 @@ def dashboard():
             )
 
         st.write("")
-        a,b=st.columns(2, gap="medium")
+        a,b=st.columns(2,gap="medium")
         with a:
             gv={g:sum(result["blend"].get(m,0) for m in result["blend"]
                       if result["df"].loc[m,"Group"]==g) for g in GROUPS}
-            st.markdown(
-                '<div class="panel"><div class="panel-title">BURDEN COMPOSITION</div>',
-                unsafe_allow_html=True
-            )
-            st.plotly_chart(
-                donut(gv,total,"kg/t"),
-                use_container_width=True,
-                config={"displayModeBar":False}
-            )
+            st.markdown('<div class="panel"><div class="panel-title">BURDEN COMPOSITION</div>',unsafe_allow_html=True)
+            st.plotly_chart(donut(gv,total,"kg/t"),use_container_width=True,config={"displayModeBar":False})
             st.markdown('</div>',unsafe_allow_html=True)
         with b:
             gv={g:sum(result["blend"].get(m,0)*result["df"].loc[m,"Price_Rs_t"]/1000
                       for m in result["blend"]
                       if result["df"].loc[m,"Group"]==g) for g in GROUPS}
-            st.markdown(
-                '<div class="panel"><div class="panel-title">COST COMPOSITION</div>',
-                unsafe_allow_html=True
-            )
-            st.plotly_chart(
-                donut(gv,cost,"₹/t"),
-                use_container_width=True,
-                config={"displayModeBar":False}
-            )
+            st.markdown('<div class="panel"><div class="panel-title">COST COMPOSITION</div>',unsafe_allow_html=True)
+            st.plotly_chart(donut(gv,cost,"₹/t"),use_container_width=True,config={"displayModeBar":False})
             st.markdown('</div>',unsafe_allow_html=True)
     else:
         st.markdown(
@@ -404,42 +450,36 @@ def dashboard():
             unsafe_allow_html=True
         )
 
-    # ---------- PRIMARY MATERIAL INPUTS ----------
+    # ---------- PRIMARY INPUTS ----------
     st.write("")
     st.markdown(
         '<div class="panel"><div class="panel-title">PRIMARY RAW MATERIAL INPUTS</div>'
-        '<div class="small">Chemistry is read-only from the active master. '
+        '<div class="small">Primary chemistry is read-only from the active master. '
         'Price, RM Stock, Tech Max and Availability are editable daily controls.</div>',
         unsafe_allow_html=True
     )
     primary_editor("dashboard_primary")
     st.markdown('</div>',unsafe_allow_html=True)
 
-    # ---------- ALTERNATIVE MATERIAL EDITING ----------
+    # ---------- ALTERNATIVE ORES FROM SAME EXCEL ----------
     st.write("")
     st.markdown(
-        '<div class="panel">'
-        '<div class="panel-title">ALTERNATIVE ORE — USER CONTROL</div>'
-        '<div class="small">'
-        'Alternative chemistry is fetched from the uploaded Excel and is editable only here. '
-        '<b>Include in Mix</b> must be switched ON before the optimizer can use an alternative ore. '
-        'OFF means the material is completely excluded, regardless of its stock or chemistry.'
-        '</div>',
+        '<div class="panel"><div class="panel-title">ALTERNATIVE ORE — USER CONTROL</div>'
+        '<div class="small">Alternative ores detected from the <b>same Master Chemistry Excel</b> are shown here. '
+        'Their chemistry is fetched from Excel and is editable only in this section. '
+        '<b>Include in Mix OFF</b> means the optimizer cannot use the ore. '
+        '<b>ON</b> makes it eligible but does not force usage.</div>',
         unsafe_allow_html=True
     )
-
     if st.session_state.alts:
         alt_editor()
     else:
         st.markdown(
             '<div class="notice info" style="margin-top:.65rem">'
-            'No alternative ore loaded. Use <b>ALTERNATIVE ORE EXCEL</b> at the top of the page '
-            'to upload contingency chemistry.</div>',
+            'No alternative ore rows detected in the active Master Excel.</div>',
             unsafe_allow_html=True
         )
-
     st.markdown('</div>',unsafe_allow_html=True)
-
 
 def rm_stock():
     page("RM Stock & Commercial Inputs","Daily inputs for primary raw materials.")
@@ -447,20 +487,19 @@ def rm_stock():
     st.markdown('<div class="panel"><div class="panel-title">PRIMARY COMMERCIAL MASTER</div>',unsafe_allow_html=True); primary_editor("rm_primary"); st.markdown('</div>',unsafe_allow_html=True)
 
 def alternative():
-    page("Alternative Raw Material","Optional contingency material. Excel chemistry can be uploaded, then edited here.")
-    a,b=st.columns([1.4,1])
-    with a:
-        st.markdown('<div class="panel"><div class="panel-title">UPLOAD ALTERNATIVE CHEMISTRY</div>',unsafe_allow_html=True)
-        f=st.file_uploader("Alternative chemistry Excel",type=["xlsx"],key="alt_upload")
-        st.markdown('<div class="small">Required: Material, Group, Fe, SiO2, Al2O3, CaO, MgO, LOI, Tech_Min, Tech_Max. Group is treated as Iron_ore.</div>',unsafe_allow_html=True)
-        if f:
-            try:
-                alt=load_alt(f); st.success(f"{len(alt)} alternative material(s) validated.")
-                if st.button("ADD TO ALTERNATIVE WORKSPACE",type="primary",use_container_width=True): add_alt(alt); st.rerun()
-            except Exception as e: st.error(str(e))
-        st.markdown('</div>',unsafe_allow_html=True)
-    with b: st.markdown('<div class="panel"><div class="panel-title">OPTIMIZATION RULE</div><div class="notice">ON = eligible. It does not force usage. OFF = completely excluded.</div><div class="small" style="margin-top:.5rem">Alternative chemistry is editable after upload.</div></div>',unsafe_allow_html=True)
-    st.write(""); st.markdown('<div class="panel"><div class="panel-title">ALTERNATIVE MATERIAL INPUTS</div>',unsafe_allow_html=True); alt_editor(); st.markdown('</div>',unsafe_allow_html=True)
+    page("Alternative Raw Material","Alternative ores are loaded from the same Master Chemistry Excel and remain OFF until explicitly enabled.")
+    st.markdown(
+        '<div class="panel"><div class="panel-title">ALTERNATIVE ORE WORKSPACE</div>'
+        '<div class="notice">OFF = excluded from optimization. ON = eligible for optimization; it is still not forced into the final mix.</div>'
+        '<div class="small" style="margin-top:.5rem">Chemistry is fetched from the active Master Excel and is editable only here. '
+        'Price, RM Stock, Tech Min and Tech Max are also editable.</div></div>',
+        unsafe_allow_html=True
+    )
+    st.write("")
+    st.markdown('<div class="panel"><div class="panel-title">ALTERNATIVE MATERIAL INPUTS</div>',unsafe_allow_html=True)
+    alt_editor()
+    st.markdown('</div>',unsafe_allow_html=True)
+
 
 def composition(kind):
     if not result or not result["blend"]: page("Composition","Run optimizer first."); return
@@ -568,21 +607,38 @@ def reports():
     st.download_button("⬇ DOWNLOAD OPTIMIZATION REPORT",bd.to_csv(index=False).encode(),"sinter_optimization_report.csv","text/csv",use_container_width=True)
 
 def settings():
-    page("Upload & Settings","Primary master chemistry only. Alternative chemistry has its own workspace.")
-    a,b=st.columns([1.4,1])
+    page("Upload & Settings","Upload one Master Chemistry workbook containing primary rows and optional alternative-ore rows.")
+    a,b=st.columns([1.6,1],gap="medium")
     with a:
-        st.markdown('<div class="panel"><div class="panel-title">PRIMARY CHEMISTRY EXCEL</div>',unsafe_allow_html=True)
-        f=st.file_uploader("Upload primary chemistry",type=["xlsx"],key="primary_upload")
+        st.markdown('<div class="panel"><div class="panel-title">MASTER CHEMISTRY EXCEL</div>',unsafe_allow_html=True)
+        f=st.file_uploader("Upload master chemistry",type=["xlsx"],key="primary_upload")
         if f:
             try:
-                df=load_primary(f); st.success(f"{len(df)} materials validated.")
-                if st.button("ACTIVATE PRIMARY CHEMISTRY",type="primary",use_container_width=True): reset_primary(df,"Uploaded • "+f.name); st.rerun()
-            except Exception as e: st.error(str(e))
-        st.markdown('<div class="small">Excel contains chemistry + Tech Min/Max only. Price/RM Stock/Availability are dashboard inputs.</div>',unsafe_allow_html=True); st.markdown('</div>',unsafe_allow_html=True)
+                primary_df,alt_df=load_master_excel(f)
+                st.success(f"{len(primary_df)} primary + {len(alt_df)} alternative material(s) detected.")
+                if st.button("ACTIVATE MASTER EXCEL",type="primary",use_container_width=True):
+                    reset_master(primary_df,alt_df,"Master Excel • "+f.name)
+                    st.rerun()
+            except Exception as e:
+                st.error(str(e))
+        st.markdown(
+            '<div class="small">The workbook contains Material, Group, Fe, SiO2, Al2O3, CaO, MgO, LOI, Tech_Min and Tech_Max. '
+            'Commercial inputs are entered in the dashboard.</div>',
+            unsafe_allow_html=True
+        )
+        st.markdown('</div>',unsafe_allow_html=True)
     with b:
         st.markdown('<div class="panel"><div class="panel-title">SYSTEM</div>',unsafe_allow_html=True)
-        if st.button("↺ RESTORE BUILT-IN MASTER",use_container_width=True): reset_primary(get_default_chemistry(),"Built-in Master Chemistry"); st.rerun()
-        st.markdown('<div class="notice">Primary chemistry is read-only after upload. Alternative chemistry remains editable in its dedicated page.</div>',unsafe_allow_html=True); st.markdown('</div>',unsafe_allow_html=True)
+        if st.button("↺ RESTORE BUILT-IN MASTER",use_container_width=True):
+            reset_primary(get_default_chemistry(),"Built-in Master Chemistry")
+            st.rerun()
+        st.markdown(
+            '<div class="notice">Alternative ores are detected from the same workbook and start OFF. '
+            'Use the Alternative Ore section on Dashboard to edit and enable them.</div>',
+            unsafe_allow_html=True
+        )
+        st.markdown('</div>',unsafe_allow_html=True)
+
 
 # ---------- ROUTE ----------
 pages={"Dashboard":dashboard,"RM Stock":rm_stock,"Optimization Results":results,"Manual Burden Control":manual,"Alternative Raw Material":alternative,"Burden Composition":lambda:composition("burden"),"Cost Composition":lambda:composition("cost"),"What-if Analysis":whatif,"Bottleneck Analysis":bottleneck,"Reports":reports,"Upload & Settings":settings}
