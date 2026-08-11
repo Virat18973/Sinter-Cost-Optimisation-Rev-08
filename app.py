@@ -74,42 +74,55 @@ def _prepare_master_dataframe(df):
     return df
 
 def load_master_excel(f):
-    """Load ONE master workbook and split primary/alternative rows.
+    """Load ONE master workbook.
 
-    The supplied master workbook uses pale-yellow formatting for the
-    alternative-ore rows (Haema, Bauxaa). That formatting is used as the
-    explicit marker, while rows named ALT_* are also treated as alternatives.
+    The workbook contains all primary materials plus two designated
+    alternative-ore slots at the bottom of Master_Chemistry.
+
+    The Notes sheet in the supplied master workbook explicitly defines
+    the bottom two rows as ALT_ORE_1 / ALT_ORE_2 slots. Therefore:
+      - all rows before those slots remain PRIMARY
+      - only the final two non-empty material rows are ALTERNATIVES
+      - the alternative material names are NOT hardcoded
+      - a blank alternative slot is ignored
     """
-    from openpyxl import load_workbook
-    raw=pd.read_excel(f, sheet_name="Master_Chemistry")
-    df=_prepare_master_dataframe(raw)
+    raw = pd.read_excel(f, sheet_name="Master_Chemistry")
+    df = _prepare_master_dataframe(raw)
 
-    wb=load_workbook(f, data_only=True)
-    ws=wb["Master_Chemistry"]
-    alt_names=set()
-    for row in range(2, ws.max_row+1):
-        name=ws.cell(row,1).value
-        if name is None or str(name).strip()=="":
-            continue
-        name=str(name).strip()
-        fill=ws.cell(row,1).fill
-        rgb=fill.fgColor.rgb if fill and fill.fill_type=="solid" else None
-        # Pale-yellow alternative rows in the provided master workbook.
-        is_yellow = bool(rgb and str(rgb).upper().endswith(("FFF9E6","F9E6","FFF2CC","F2CC")))
-        is_alt_name = name.upper().startswith("ALT_")
-        if is_yellow or is_alt_name:
-            alt_names.add(name)
+    if df.empty:
+        raise ValueError("Master_Chemistry contains no material rows.")
 
-    # Fallback for the documented bottom alternative slots: if explicit
-    # yellow/ALT markers exist, use them. Otherwise the workbook is treated
-    # as an all-primary master.
-    alt_names={m for m in alt_names if m in df.index}
-    alt_df=df.loc[list(alt_names)].copy() if alt_names else df.iloc[0:0].copy()
-    primary_df=df.drop(index=list(alt_names)).copy() if alt_names else df.copy()
+    # Read the Notes sheet where possible. It documents the two bottom
+    # rows as the alternative-ore slots. We deliberately do not use
+    # yellow formatting because formatting should never turn a primary
+    # recycle/flux/fuel into an alternative.
+    alt_count = 2
+    try:
+        notes = pd.read_excel(f, sheet_name="Notes", header=None).fillna("")
+        notes_text = " ".join(str(x) for x in notes.astype(str).values.flatten())
+        if "two Alternative Ore slots" not in notes_text and "two Alternative Ore" not in notes_text:
+            alt_count = 0
+    except Exception:
+        # If Notes is unavailable, retain the documented two-slot
+        # convention rather than using visual formatting.
+        alt_count = 2
 
-    # Alternatives are always iron ore candidates and start disabled.
+    if alt_count:
+        names = [str(x).strip() for x in df.index.tolist() if str(x).strip()]
+        alt_names = names[-2:]
+    else:
+        alt_names = []
+
+    alt_names = [m for m in alt_names if m and not m.upper().startswith("ALT_ORE_")]
+
+    # If a designated slot is blank / placeholder, it should not appear.
+    alt_df = df.loc[alt_names].copy() if alt_names else df.iloc[0:0].copy()
+    primary_df = df.drop(index=alt_names).copy() if alt_names else df.copy()
+
+    # Alternative ores are iron-ore candidates in the optimization model.
     if len(alt_df):
-        alt_df["Group"]="Iron_ore"
+        alt_df["Group"] = "Iron_ore"
+
     return primary_df, alt_df
 
 def load_primary(f):
@@ -237,28 +250,142 @@ def primary_editor(key):
 
 def alt_editor():
     if not st.session_state.alts:
-        st.info("No alternative material loaded. Upload an alternative chemistry Excel above.")
+        st.markdown(
+            '<div class="notice info">No alternative ore is currently defined in the '
+            'two alternative slots of the Master Chemistry Excel.</div>',
+            unsafe_allow_html=True
+        )
         return
-    data=[]
+
+    data = []
     for m in st.session_state.alts:
-        r=st.session_state.df.loc[m]
-        data.append({"Material":m,"Allow Alternative":st.session_state.alt_on.get(m,False),"Fe":r.Fe,"SiO2":r.SiO2,"Al2O3":r.Al2O3,"CaO":r.CaO,"MgO":r.MgO,"LOI":r.LOI,"Price (₹/t)":r.Price_Rs_t,"RM Stock (t)":r.Available_Tonnes,"Tech Min":r.Tech_Min,"Tech Max (t/d)":r.Tech_Max})
-    ed=st.data_editor(pd.DataFrame(data),hide_index=True,use_container_width=True,height=330,key="alt_editor",disabled=["Material"],column_config={
-        "Allow Alternative":st.column_config.CheckboxColumn("Allow Alternative",help="ON makes it eligible; it does not force usage."),
-        "Fe":st.column_config.NumberColumn("Fe ✎",min_value=0,step=.01),"SiO2":st.column_config.NumberColumn("SiO₂ ✎",min_value=0,step=.01),
-        "Al2O3":st.column_config.NumberColumn("Al₂O₃ ✎",min_value=0,step=.01),"CaO":st.column_config.NumberColumn("CaO ✎",min_value=0,step=.01),
-        "MgO":st.column_config.NumberColumn("MgO ✎",min_value=0,step=.01),"LOI":st.column_config.NumberColumn("LOI ✎",min_value=0,step=.01),
-        "Price (₹/t)":st.column_config.NumberColumn("Price ₹/t ✎",min_value=0,step=1,format="₹ %.0f"),
-        "RM Stock (t)":st.column_config.NumberColumn("RM Stock t ✎",min_value=0,step=100),
-        "Tech Min":st.column_config.NumberColumn("Tech Min",min_value=0,step=1),
-        "Tech Max (t/d)":st.column_config.NumberColumn("Tech Max t/d ✎",min_value=0,step=1)})
-    for _,r in ed.iterrows():
-        m=r.Material; st.session_state.alt_on[m]=bool(r["Allow Alternative"])
-        for c in ["Fe","SiO2","Al2O3","CaO","MgO","LOI"]: st.session_state.df.loc[m,c]=float(r[c])
-        st.session_state.df.loc[m,"Tech_Min"]=float(r["Tech Min"]); st.session_state.df.loc[m,"Tech_Max"]=float(r["Tech Max (t/d)"])
-        st.session_state.df.loc[m,"Price_Rs_t"]=float(r["Price (₹/t)"]); st.session_state.df.loc[m,"Available_Tonnes"]=float(r["RM Stock (t)"])
-        st.session_state.avail[m]=bool(r["Allow Alternative"])
-    st.session_state.changed=True
+        r = st.session_state.df.loc[m]
+        data.append({
+            "Material": m,
+            "Allow Alternative": st.session_state.alt_on.get(m, False),
+            "Fe": r.Fe,
+            "SiO2": r.SiO2,
+            "Al2O3": r.Al2O3,
+            "CaO": r.CaO,
+            "MgO": r.MgO,
+            "LOI": r.LOI,
+            "Price (₹/t)": r.Price_Rs_t,
+            "RM Stock (t)": r.Available_Tonnes,
+            "Tech Min": r.Tech_Min,
+            "Tech Max (t/d)": r.Tech_Max
+        })
+
+    ed = st.data_editor(
+        pd.DataFrame(data),
+        hide_index=True,
+        use_container_width=True,
+        height=330,
+        key="alt_editor",
+        # Material is intentionally editable for alternatives.
+        disabled=[],
+        column_config={
+            "Material": st.column_config.TextColumn(
+                "Material Name ✎",
+                help="Rename the alternative material. This name is used in the optimization output."
+            ),
+            "Allow Alternative": st.column_config.CheckboxColumn(
+                "Include in Mix",
+                help="OFF = completely excluded. ON = eligible, but optimizer does not have to use it."
+            ),
+            "Fe": st.column_config.NumberColumn("Fe ✎", min_value=0, step=.01),
+            "SiO2": st.column_config.NumberColumn("SiO₂ ✎", min_value=0, step=.01),
+            "Al2O3": st.column_config.NumberColumn("Al₂O₃ ✎", min_value=0, step=.01),
+            "CaO": st.column_config.NumberColumn("CaO ✎", min_value=0, step=.01),
+            "MgO": st.column_config.NumberColumn("MgO ✎", min_value=0, step=.01),
+            "LOI": st.column_config.NumberColumn("LOI ✎", min_value=0, step=.01),
+            "Price (₹/t)": st.column_config.NumberColumn(
+                "Price ₹/t ✎", min_value=0, step=1, format="₹ %.0f"
+            ),
+            "RM Stock (t)": st.column_config.NumberColumn(
+                "RM Stock t ✎", min_value=0, step=100, format="%.0f"
+            ),
+            "Tech Min": st.column_config.NumberColumn(
+                "Tech Min ✎", min_value=0, step=1, format="%.0f"
+            ),
+            "Tech Max (t/d)": st.column_config.NumberColumn(
+                "Tech Max t/d ✎", min_value=0, step=1, format="%.0f"
+            )
+        }
+    )
+
+    # Apply edits safely, including alternative material renaming.
+    old_names = list(st.session_state.alts)
+    rename_map = {}
+
+    for i, old_name in enumerate(old_names):
+        row = ed.iloc[i]
+        new_name = str(row["Material"]).strip()
+
+        if not new_name:
+            new_name = old_name
+
+        # Prevent collisions with primary materials or another alternative.
+        existing_other = set(st.session_state.df.index) - {old_name}
+        duplicate = new_name in existing_other
+        duplicate_among_rows = new_name in {
+            str(ed.iloc[j]["Material"]).strip()
+            for j in range(len(ed))
+            if j != i
+        }
+
+        if duplicate or duplicate_among_rows:
+            st.warning(
+                f"Alternative material name '{new_name}' already exists. "
+                f"Keeping '{old_name}'."
+            )
+            new_name = old_name
+
+        rename_map[old_name] = new_name
+
+    # Rename rows in the master dataframe and preserve all alternative state.
+    for old_name, new_name in rename_map.items():
+        if old_name != new_name:
+            st.session_state.df = st.session_state.df.rename(
+                index={old_name: new_name}
+            )
+            st.session_state.alt_on[new_name] = st.session_state.alt_on.pop(
+                old_name, False
+            )
+            st.session_state.avail[new_name] = st.session_state.avail.pop(
+                old_name, False
+            )
+
+    new_alt_names = [rename_map[m] for m in old_names]
+    st.session_state.alts = new_alt_names
+
+    # Apply chemistry/commercial edits.
+    for i, m in enumerate(new_alt_names):
+        r = ed.iloc[i]
+
+        st.session_state.alt_on[m] = bool(r["Allow Alternative"])
+
+        for c in ["Fe", "SiO2", "Al2O3", "CaO", "MgO", "LOI"]:
+            st.session_state.df.loc[m, c] = float(r[c])
+
+        st.session_state.df.loc[m, "Tech_Min"] = float(r["Tech Min"])
+        st.session_state.df.loc[m, "Tech_Max"] = float(r["Tech Max (t/d)"]
+        )
+        st.session_state.df.loc[m, "Price_Rs_t"] = float(r["Price (₹/t)"])
+        st.session_state.df.loc[m, "Available_Tonnes"] = float(r["RM Stock (t)"])
+
+        # Availability for alternatives is controlled by Include in Mix.
+        st.session_state.avail[m] = bool(r["Allow Alternative"])
+
+    st.session_state.changed = True
+
+    st.markdown(
+        '<div class="small" style="margin-top:.4rem">'
+        '🟢 <b>ON</b> = alternative eligible for optimization &nbsp; '
+        '• &nbsp; ⚪ <b>OFF</b> = alternative completely excluded'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
 
 def run(ref=None):
     cur=active_df(); prev=st.session_state.result["cost"] if st.session_state.result else None
@@ -299,7 +426,7 @@ def dashboard():
     with upload_col:
         st.markdown(
             '<div class="notice"><b>MASTER CHEMISTRY EXCEL</b><br>'
-            '<span class="small">Primary + Alternative Ore rows in the same workbook</span></div>',
+            '<span class="small">12 Primary + 2 Alternative Ore slots in the same workbook</span></div>',
             unsafe_allow_html=True
         )
         master_file=st.file_uploader(
