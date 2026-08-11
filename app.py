@@ -495,6 +495,7 @@ def dashboard():
     st.markdown('<div style="height:12px"></div>',unsafe_allow_html=True)
 
     # ---------- CONTROL ROOM ----------
+    st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="hero"><b>CONTROL ROOM</b>'
         '<div class="sub">Primary chemistry is read-only from the active master Excel. '
@@ -502,6 +503,10 @@ def dashboard():
         'Alternative chemistry is editable only in the Alternative Ore section below.</div></div>',
         unsafe_allow_html=True
     )
+
+    # Extra vertical breathing room keeps the Control Room and its action row
+    # visually separated on production screens.
+    st.markdown('<div style="height:20px"></div>', unsafe_allow_html=True)
 
     a,b,c=st.columns([4.2,1.7,1.25],gap="large")
     with a:
@@ -521,14 +526,15 @@ def dashboard():
             unsafe_allow_html=True
         )
 
+    # Keep the status notice visually separated from the action row.
     if st.session_state.changed:
         st.markdown(
-            '<div class="notice notice-w" style="margin-top:.65rem">'
+            '<div class="notice notice-w" style="margin-top:20px">'
             '△ Inputs changed — run optimizer to apply.</div>',
             unsafe_allow_html=True
         )
 
-    st.markdown('<div style="height:12px"></div>',unsafe_allow_html=True)
+    st.markdown('<div style="height:20px"></div>',unsafe_allow_html=True)
 
     if result and result["blend"]:
         bd,cost,total=breakdown(result["blend"],result["df"])
