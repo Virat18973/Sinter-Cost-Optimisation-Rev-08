@@ -193,7 +193,7 @@ def run(ref=None):
 
 # ---------- SIDEBAR ----------
 with st.sidebar:
-    st.markdown("### BAJAJ MUKAND"); st.markdown('<div class="small">Kalyani Steels × Mukand • Hospet</div>',unsafe_allow_html=True); st.markdown("---")
+    st.markdown("### HOSPET STEELS LIMITED"); st.markdown('<div class="small">Kalyani Steels × Mukand • Hospet</div>',unsafe_allow_html=True); st.markdown("---")
     groups=[("WORKSPACE",["Dashboard"]),("OPERATIONS",["RM Stock","Optimization Results","Manual Burden Control","Alternative Raw Material"]),("ANALYSIS",["Burden Composition","Cost Composition","What-if Analysis","Bottleneck Analysis"]),("REPORTING",["Reports"]),("SYSTEM",["Upload & Settings"])]
     for h,items in groups:
         st.markdown(f'<div class="navhead">{h}</div>',unsafe_allow_html=True)
