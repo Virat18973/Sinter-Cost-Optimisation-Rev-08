@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -277,13 +276,24 @@ def results():
     bd,cost,total=breakdown(result["blend"],result["df"]); a=result["achieved"]; ok=all(quality_checks(a,TARGETS).values())
     cc=st.columns(4)
     for col,l,v,s,cl in [(cc[0],"TOTAL COST",f"₹{cost:,.2f}/t","Current optimum","kpi-s"),(cc[1],"BURDEN",f"{total:,.1f} kg/t","Optimized","kpi-g"),(cc[2],"Fe",f"{a['Fe']:.3f}%","Target band","kpi-a"),(cc[3],"QUALITY","PASS" if ok else "REVIEW","Gate","kpi-g" if ok else "kpi-r")]: col.markdown(f'<div class="kpi {cl}"><div class="kpi-label">{l}</div><div class="kpi-value">{v}</div><div class="kpi-sub">{s}</div></div>',unsafe_allow_html=True)
-    st.write(""); a,b=st.columns([1,2]); a.markdown('<div class="panel"><div class="panel-title">QUALITY</div>'+qpanel(a=a if False else result["achieved"])+'</div>',unsafe_allow_html=True); b.markdown('<div class="panel"><div class="panel-title">RECIPE</div>'+table(bd.round(2),{"Cost Rs/t"})+'</div>',unsafe_allow_html=True)
+    st.write(""); a,b=st.columns([1,2]); a.markdown('<div class="panel"><div class="panel-title">QUALITY</div>'+qpanel(result["achieved"])+'</div>',unsafe_allow_html=True); b.markdown('<div class="panel"><div class="panel-title">RECIPE</div>'+table(bd.round(2),{"Cost Rs/t"})+'</div>',unsafe_allow_html=True)
 
 def manual():
     page("Manual Burden Control","Adjust the optimized burden and see burden, cost and chemistry impact inside this tab only.")
     if not result or not result["blend"]: st.info("Run optimizer first."); return
-    df=result["df"]; base=st.session_state.manual_base or result["blend"].copy(); st.session_state.manual_base=base.copy()
-    adj=[m for m in base if df.loc[m,"Group"] in ("Iron_ore","Flux")]; fixed=[m for m in base if df.loc[m,"Group"] in ("Recycle","Fuel")]
+    df=result["df"]
+
+    # Always use the latest optimizer result if the stored manual baseline
+    # belongs to an older result/dataset.
+    current_blend=result["blend"].copy()
+    stored_base=st.session_state.manual_base
+    if not stored_base or set(stored_base.keys()) != set(current_blend.keys()):
+        stored_base=current_blend.copy()
+        st.session_state.manual_base=stored_base.copy()
+
+    base=stored_base.copy()
+    adj=[m for m in base if m in df.index and df.loc[m,"Group"] in ("Iron_ore","Flux")]
+    fixed=[m for m in base if m in df.index and df.loc[m,"Group"] in ("Recycle","Fuel")]
     st.markdown('<div class="notice">Iron Ore ±15% • Flux ±10% • Recycle/Fuel fixed • total burden preserved.</div>',unsafe_allow_html=True)
     req={}; cols=st.columns(2)
     for i,m in enumerate(adj):
@@ -291,8 +301,30 @@ def manual():
         if key not in st.session_state or not mn<=float(st.session_state[key])<=mx: st.session_state[key]=b
         with cols[i%2]: req[m]=st.slider(f"{m} — kg/t",mn,mx,float(st.session_state[key]),.5,key=key)
     adjusted=redistribute_adjustment(base,df,req)
-    for m in fixed: adjusted[m]=base[m]
-    ach=compute_achieved(adjusted,df,1000); ac=sum(adjusted[m]*df.loc[m,"Price_Rs_t"]/1000 for m in adjusted); bc=float(result["cost"] or 0); total=sum(adjusted); ok=all(quality_checks(ach,TARGETS).values())
+
+    # Defensive cleanup: keep only valid material keys and numeric quantities.
+    adjusted = {
+        m: float(qty)
+        for m, qty in adjusted.items()
+        if m in df.index and pd.notna(qty)
+    }
+    for m in fixed:
+        if m in df.index:
+            adjusted[m]=float(base[m])
+
+    # Recalculate the adjusted recipe using the SAME backend chemistry engine.
+    ach=compute_achieved(adjusted,df,1000)
+
+    # Cost is calculated from the current dashboard prices.
+    ac=sum(
+        float(adjusted[m]) * float(df.loc[m,"Price_Rs_t"]) / 1000
+        for m in adjusted
+        if m in df.index
+    )
+
+    bc=float(result["cost"] or 0)
+    total=sum(float(v) for v in adjusted.values())
+    ok=all(quality_checks(ach,TARGETS).values())
     cc=st.columns(5)
     for col,l,v,s,cl in [(cc[0],"BASE COST",f"₹{bc:,.2f}","Optimized","kpi-s"),(cc[1],"ADJUSTED COST",f"₹{ac:,.2f}",f"{ac-bc:+,.2f}","kpi-o"),(cc[2],"BURDEN",f"{total:,.1f}","Preserved","kpi-g"),(cc[3],"Fe",f"{ach['Fe']:.3f}%","After adjustment","kpi-a"),(cc[4],"QUALITY","PASS" if ok else "REVIEW","After adjustment","kpi-g" if ok else "kpi-r")]: col.markdown(f'<div class="kpi {cl}"><div class="kpi-label">{l}</div><div class="kpi-value">{v}</div><div class="kpi-sub">{s}</div></div>',unsafe_allow_html=True)
     st.write(""); a,b=st.columns(2)
