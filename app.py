@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import math
 from pathlib import Path
 from datetime import datetime
 
@@ -391,7 +392,16 @@ def run(ref=None):
     cur=active_df(); prev=st.session_state.result["cost"] if st.session_state.result else None
     x=solve_blend_with_compensation(cur,1000,TARGETS,baseline_blend=ref)
     st.session_state.result={"status":x[0],"blend":x[1],"cost":x[2],"achieved":x[3],"diagnostics":x[4],"fallback":x[5],"df":cur.copy()}
-    st.session_state.manual_base=x[1].copy() if x[1] else None; st.session_state.manual=x[1].copy() if x[1] else None
+
+    # A fresh optimizer result must become the new manual-adjustment baseline.
+    # Clear old slider widget state so Streamlit cannot reuse a value that is
+    # outside the new slider's min/max range.
+    for k in list(st.session_state.keys()):
+        if str(k).startswith("man_"):
+            del st.session_state[k]
+
+    st.session_state.manual_base=x[1].copy() if x[1] else None
+    st.session_state.manual=x[1].copy() if x[1] else None
     st.session_state.changed=False; st.session_state.prev_cost=prev; st.session_state.runs+=1
 
 # ---------- SIDEBAR ----------
@@ -669,9 +679,46 @@ def manual():
     st.markdown('<div class="notice">Iron Ore ±15% • Flux ±10% • Recycle/Fuel fixed • total burden preserved.</div>',unsafe_allow_html=True)
     req={}; cols=st.columns(2)
     for i,m in enumerate(adj):
-        b=float(base[m]); r=.15 if df.loc[m,"Group"]=="Iron_ore" else .10; mn=max(0,b*(1-r)); mx=max(mn+1,b*(1+r)); key="man_"+m
-        if key not in st.session_state or not mn<=float(st.session_state[key])<=mx: st.session_state[key]=b
-        with cols[i%2]: req[m]=st.slider(f"{m} — kg/t",mn,mx,float(st.session_state[key]),.5,key=key)
+        # Defensive slider bounds. Streamlit requires min <= value <= max,
+        # and values from a previous rerun can otherwise become stale.
+        try:
+            b=float(base[m])
+        except (TypeError, ValueError):
+            b=0.0
+        if not math.isfinite(b) or b < 0:
+            b=0.0
+
+        r=.15 if df.loc[m,"Group"]=="Iron_ore" else .10
+        mn=max(0.0, b*(1.0-r))
+        mx=b*(1.0+r)
+
+        # Guarantee a usable range even for zero/tiny quantities.
+        if not math.isfinite(mx) or mx <= mn:
+            mx=mn+1.0
+        if (mx-mn) < 0.5:
+            mx=mn+0.5
+
+        key="man_"+m
+        current=st.session_state.get(key,b)
+        try:
+            current=float(current)
+        except (TypeError, ValueError):
+            current=b
+        if not math.isfinite(current):
+            current=b
+
+        # Clamp stale widget state into the current valid range.
+        current=max(mn,min(current,mx))
+
+        with cols[i%2]:
+            req[m]=st.slider(
+                f"{m} — kg/t",
+                min_value=float(mn),
+                max_value=float(mx),
+                value=float(current),
+                step=0.5,
+                key=key
+            )
     adjusted=redistribute_adjustment(base,df,req)
 
     # Defensive cleanup: keep only valid material keys and numeric quantities.
