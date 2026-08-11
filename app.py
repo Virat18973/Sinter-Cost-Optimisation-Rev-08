@@ -19,10 +19,10 @@ st.markdown(r'''
 :root{--bg:#0b1015;--p:#121a21;--p2:#17232b;--l:#2a3a44;--t:#edf3f6;--m:#91a1ab;--s:#4f8fb8;--g:#35c47a;--a:#e6a63a;--r:#d95757;--o:#e47732}
 html,body,[class*="css"]{font-family:Inter,system-ui,sans-serif}
 .stApp{background:radial-gradient(circle at 75% 0%,#24475b22,transparent 28%),var(--bg);color:var(--t)}
-.block-container{max-width:1800px;padding:.75rem 1rem 2rem}
+.block-container{max-width:1800px;padding:1rem 1.15rem 2.5rem}
 [data-testid="stSidebar"]{background:#0e161c;border-right:1px solid #263740}
 h1,h2,h3{color:var(--t)!important}.sub,.small{color:var(--m);font-size:.7rem}.eyebrow{color:#7194a7;font-size:.58rem;letter-spacing:.16em;font-weight:900}
-.panel{background:linear-gradient(145deg,#141e25,#10171d);border:1px solid var(--l);border-radius:11px;padding:.8rem}
+.panel{background:linear-gradient(145deg,#141e25,#10171d);border:1px solid var(--l);border-radius:11px;padding:.9rem;margin-bottom:.25rem}
 .panel-title{font-size:.6rem;font-weight:900;letter-spacing:.12em;color:#9eb2bd;text-transform:uppercase;margin-bottom:.6rem}
 .hero{background:linear-gradient(110deg,#17242d,#111a21 65%,#18242b);border:1px solid #314651;border-radius:12px;padding:.8rem}
 .kpi{border:1px solid var(--l);border-radius:10px;padding:.7rem;min-height:88px;background:#121b22}
@@ -193,7 +193,7 @@ def run(ref=None):
 
 # ---------- SIDEBAR ----------
 with st.sidebar:
-    st.markdown("### HOSPET STEELS LIMITED"); st.markdown('<div class="small">Kalyani Steels × Mukand • Hospet</div>',unsafe_allow_html=True); st.markdown("---")
+    st.markdown("### BAJAJ MUKAND"); st.markdown('<div class="small">Kalyani Steels × Mukand • Hospet</div>',unsafe_allow_html=True); st.markdown("---")
     groups=[("WORKSPACE",["Dashboard"]),("OPERATIONS",["RM Stock","Optimization Results","Manual Burden Control","Alternative Raw Material"]),("ANALYSIS",["Burden Composition","Cost Composition","What-if Analysis","Bottleneck Analysis"]),("REPORTING",["Reports"]),("SYSTEM",["Upload & Settings"])]
     for h,items in groups:
         st.markdown(f'<div class="navhead">{h}</div>',unsafe_allow_html=True)
@@ -209,18 +209,19 @@ st.markdown(f'<div style="display:flex;justify-content:space-between;align-items
 # ---------- PAGES ----------
 def dashboard():
     st.markdown('<div class="hero"><b>CONTROL ROOM</b><div class="sub">Primary chemistry is read-only from master Excel. Price, RM Stock, Tech Max and availability are daily dashboard inputs.</div></div>',unsafe_allow_html=True)
-    a,b,c=st.columns([4,1.5,1.3])
+    a,b,c=st.columns([4.2,1.7,1.25], gap="large")
     with a: st.markdown(f'<div class="notice"><b>ACTIVE SOURCE:</b> {st.session_state.source}</div>',unsafe_allow_html=True)
     with b:
         if st.button("🚀 RUN OPTIMIZER",type="primary",use_container_width=True):
             with st.spinner("Optimizing…"): run()
             st.rerun()
     with c: st.markdown(f'<div class="notice" style="text-align:center"><b>RUN {st.session_state.runs}</b><br>{len(st.session_state.alts)} alt. RM</div>',unsafe_allow_html=True)
-    if st.session_state.changed: st.markdown('<div class="notice notice-w" style="margin-top:.5rem">△ Inputs changed — run optimizer to apply.</div>',unsafe_allow_html=True)
+    if st.session_state.changed: st.markdown('<div class="notice notice-w" style="margin-top:.65rem">△ Inputs changed — run optimizer to apply.</div>',unsafe_allow_html=True)
+    st.markdown("<div style=\"height:12px\"></div>", unsafe_allow_html=True)
     if result and result["blend"]:
         bd,cost,total=breakdown(result["blend"],result["df"]); ach=result["achieved"]; ok=all(quality_checks(ach,TARGETS).values())
         cards=[("TOTAL COST",f"₹{cost:,.2f}/t","Optimized","kpi-s"),("TOTAL BURDEN",f"{total:,.1f} kg/t","Per tonne sinter","kpi-g"),("Fe",f"{ach['Fe']:.3f}%",f"{FE_LOWER:.1f}–{FE_UPPER:.1f} target","kpi-a"),("QUALITY","PASS" if ok else "REVIEW","Mandatory constraints","kpi-g" if ok else "kpi-r"),("ALT ORE","USED" if any(result["blend"].get(m,0)>0 for m in st.session_state.alts) else "NOT USED","Contingency","kpi-o")]
-        cc=st.columns(5)
+        cc=st.columns(5, gap="medium")
         for col,(l,v,s,cl) in zip(cc,cards): col.markdown(f'<div class="kpi {cl}"><div class="kpi-label">{l}</div><div class="kpi-value">{v}</div><div class="kpi-sub">{s}</div></div>',unsafe_allow_html=True)
         st.write(""); a,b=st.columns([1,2])
         with a: st.markdown('<div class="panel"><div class="panel-title">ACHIEVED CHEMISTRY</div>'+qpanel(ach)+'</div>',unsafe_allow_html=True)
@@ -233,7 +234,96 @@ def dashboard():
             gv={g:sum(result["blend"].get(m,0)*result["df"].loc[m,"Price_Rs_t"]/1000 for m in result["blend"] if result["df"].loc[m,"Group"]==g) for g in GROUPS}
             st.markdown('<div class="panel"><div class="panel-title">COST COMPOSITION</div>',unsafe_allow_html=True); st.plotly_chart(donut(gv,cost,"₹/t"),use_container_width=True,config={"displayModeBar":False}); st.markdown('</div>',unsafe_allow_html=True)
     else: st.markdown('<div class="panel" style="margin-top:.7rem;text-align:center;padding:2rem"><b>Optimization workspace ready</b><div class="small">Enter daily inputs and run the optimizer.</div></div>',unsafe_allow_html=True)
-    st.write(""); st.markdown('<div class="panel"><div class="panel-title">PRIMARY RAW MATERIAL INPUTS</div>',unsafe_allow_html=True); primary_editor("dashboard_primary"); st.markdown('</div>',unsafe_allow_html=True)
+    st.write("")
+    st.markdown('<div class="panel"><div class="panel-title">PRIMARY RAW MATERIAL INPUTS</div>',unsafe_allow_html=True)
+    primary_editor("dashboard_primary")
+    st.markdown('</div>',unsafe_allow_html=True)
+
+    # Compact alternative-RM workspace directly on the Dashboard.
+    st.write("")
+    st.markdown(
+        '<div class="panel"><div class="panel-title">ALTERNATIVE RAW MATERIAL — OPTIONAL</div>'
+        '<div class="small">Upload alternative chemistry only when required. '
+        'After upload, chemistry, price, RM Stock and Tech Max can be edited here. '
+        'Turning <b>Allow Alternative</b> ON only makes the material eligible; it does not force usage.</div></div>',
+        unsafe_allow_html=True
+    )
+
+    alt_u, alt_info = st.columns([2.4, 1], gap="medium")
+    with alt_u:
+        alt_file = st.file_uploader(
+            "Upload alternative raw material chemistry (.xlsx)",
+            type=["xlsx"],
+            key="dashboard_alt_upload",
+            label_visibility="collapsed"
+        )
+    with alt_info:
+        st.markdown(
+            '<div class="notice info">Optional contingency input<br>'
+            '<span class="small">Required: Material, Group, Fe, SiO2, Al2O3, CaO, MgO, LOI, Tech_Min, Tech_Max</span></div>',
+            unsafe_allow_html=True
+        )
+
+    if alt_file:
+        try:
+            alt_df = load_alt(alt_file)
+            st.success(f"{len(alt_df)} alternative material(s) validated.")
+            if st.button(
+                "＋ ADD ALTERNATIVE MATERIALS",
+                type="primary",
+                use_container_width=True,
+                key="dashboard_add_alt"
+            ):
+                add_alt(alt_df)
+                st.rerun()
+        except Exception as e:
+            st.error(str(e))
+
+    if st.session_state.alts:
+        st.markdown('<div class="small" style="margin:.55rem 0 .25rem">Alternative materials currently loaded</div>', unsafe_allow_html=True)
+        alt_editor_key = "dashboard_alt_editor"
+        data=[]
+        for m in st.session_state.alts:
+            r=st.session_state.df.loc[m]
+            data.append({
+                "Material":m,
+                "Allow Alternative":st.session_state.alt_on.get(m,False),
+                "Fe":r.Fe, "SiO2":r.SiO2, "Al2O3":r.Al2O3,
+                "CaO":r.CaO, "MgO":r.MgO, "LOI":r.LOI,
+                "Price (₹/t)":r.Price_Rs_t,
+                "RM Stock (t)":r.Available_Tonnes,
+                "Tech Max (t/d)":r.Tech_Max
+            })
+        ed=st.data_editor(
+            pd.DataFrame(data),
+            hide_index=True,
+            use_container_width=True,
+            height=min(280, 90 + 42*len(data)),
+            key=alt_editor_key,
+            disabled=["Material"],
+            column_config={
+                "Allow Alternative":st.column_config.CheckboxColumn("Allow Alternative"),
+                "Fe":st.column_config.NumberColumn("Fe ✎",min_value=0,step=.01),
+                "SiO2":st.column_config.NumberColumn("SiO₂ ✎",min_value=0,step=.01),
+                "Al2O3":st.column_config.NumberColumn("Al₂O₃ ✎",min_value=0,step=.01),
+                "CaO":st.column_config.NumberColumn("CaO ✎",min_value=0,step=.01),
+                "MgO":st.column_config.NumberColumn("MgO ✎",min_value=0,step=.01),
+                "LOI":st.column_config.NumberColumn("LOI ✎",min_value=0,step=.01),
+                "Price (₹/t)":st.column_config.NumberColumn("Price ₹/t ✎",min_value=0,step=1,format="₹ %.0f"),
+                "RM Stock (t)":st.column_config.NumberColumn("RM Stock t ✎",min_value=0,step=100),
+                "Tech Max (t/d)":st.column_config.NumberColumn("Tech Max t/d ✎",min_value=0,step=1)
+            }
+        )
+        for _,r in ed.iterrows():
+            m=r.Material
+            st.session_state.alt_on[m]=bool(r["Allow Alternative"])
+            for c in ["Fe","SiO2","Al2O3","CaO","MgO","LOI"]:
+                st.session_state.df.loc[m,c]=float(r[c])
+            st.session_state.df.loc[m,"Price_Rs_t"]=float(r["Price (₹/t)"])
+            st.session_state.df.loc[m,"Available_Tonnes"]=float(r["RM Stock (t)"])
+            st.session_state.df.loc[m,"Tech_Max"]=float(r["Tech Max (t/d)"])
+            st.session_state.avail[m]=bool(r["Allow Alternative"])
+        st.session_state.changed=True
 
 def rm_stock():
     page("RM Stock & Commercial Inputs","Daily inputs for primary raw materials.")
@@ -325,7 +415,7 @@ def manual():
     bc=float(result["cost"] or 0)
     total=sum(float(v) for v in adjusted.values())
     ok=all(quality_checks(ach,TARGETS).values())
-    cc=st.columns(5)
+    cc=st.columns(5, gap="medium")
     for col,l,v,s,cl in [(cc[0],"BASE COST",f"₹{bc:,.2f}","Optimized","kpi-s"),(cc[1],"ADJUSTED COST",f"₹{ac:,.2f}",f"{ac-bc:+,.2f}","kpi-o"),(cc[2],"BURDEN",f"{total:,.1f}","Preserved","kpi-g"),(cc[3],"Fe",f"{ach['Fe']:.3f}%","After adjustment","kpi-a"),(cc[4],"QUALITY","PASS" if ok else "REVIEW","After adjustment","kpi-g" if ok else "kpi-r")]: col.markdown(f'<div class="kpi {cl}"><div class="kpi-label">{l}</div><div class="kpi-value">{v}</div><div class="kpi-sub">{s}</div></div>',unsafe_allow_html=True)
     st.write(""); a,b=st.columns(2)
     gv={g:sum(adjusted.get(m,0) for m in adjusted if df.loc[m,"Group"]==g) for g in GROUPS}; gc={g:sum(adjusted.get(m,0)*df.loc[m,"Price_Rs_t"]/1000 for m in adjusted if df.loc[m,"Group"]==g) for g in GROUPS}
